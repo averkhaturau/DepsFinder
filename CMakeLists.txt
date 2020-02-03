@@ -14,6 +14,7 @@ set(
     HEADERS_FILES
     inih/ini.h
     inih/cpp/INIReader.h
+    TasksPool.h
 )
 
 include_directories(${CMAKE_SOURCE_DIR}/inih/cpp)

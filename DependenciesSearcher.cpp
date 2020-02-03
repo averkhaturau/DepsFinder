@@ -1,11 +1,15 @@
 #include "INIReader.h"
+
+#include "TasksPool.h"
+
 #include <array>
 #include <iostream>
 #include <filesystem>
 #include <list>
 #include <fstream>
 #include <regex>
-#include <unordered_map>
+#include <map>
+#include <set>
 #include <vector>
 #include <future>
 #include <algorithm>
@@ -26,7 +30,7 @@ Params FetchParameters(INIReader& iniReader);
 
 std::list<path> FilterFilesByExtentions(const std::list<path>& sourceDirs, const std::regex& extentionsPattern);
 
-std::unordered_map<std::string, std::vector<path>> DetectDependencies(const std::list<path>& searched, const std::list<path>& scanned);
+std::map<std::string, std::set<path>> DetectDependencies(const std::list<path>& searched, const std::list<path>& scanned);
 
 
 
@@ -64,7 +68,7 @@ int main(int argc, char** argv)
     const auto start = std::chrono::steady_clock::now();
 
     // Сканируем файлы на присутствие имён искомых файлов
-    std::unordered_map<std::string, std::vector<path>> potentialDependencies = DetectDependencies(searched_FileNames, scanned_FileNames);
+    const auto potentialDependencies = DetectDependencies(searched_FileNames, scanned_FileNames);
 
     const auto finish = std::chrono::steady_clock::now();
     std::cout << "\nWorked " << std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count() << "ms\n";
@@ -146,21 +150,20 @@ std::list<path> FilterFilesByExtentions(const std::list<path>& sourceDirs, const
 //                          key: искомый файл,
 //                          value: список файлов, в которых присутствует его имя
 //                         >
-std::unordered_map<std::string, std::vector<path>> DetectDependencies(const std::list<path>& searched_FileNames, const std::list<path>& scanned_FileNames)
+std::map<std::string, std::set<path>> DetectDependencies(const std::list<path>& searched_FileNames, const std::list<path>& scanned_FileNames)
 {
-    std::unordered_map<std::string, std::vector<path>> potentialDependencies;
+    std::map<std::string, std::set<path>> potentialDependencies;
 
     std::cout << "[0%] preparing...\r";
     {
         std::mutex mut_writeDependency;
-        std::vector<std::future<void>> todo;
-        todo.reserve(scanned_FileNames.size());
+        TasksPool todo;
 
         size_t i = 0;
         for (const auto& scanned_FileName : scanned_FileNames) {
             if (++i % ((scanned_FileNames.size()/5)+1) == 0)
                 std::cout << "[" << i * 5 / scanned_FileNames.size() << "%] searching...  \r";
-            todo.push_back(std::async([scanned_FileName, &searched_FileNames, &mut_writeDependency, &potentialDependencies]()
+            todo.addTask([scanned_FileName, &searched_FileNames, &mut_writeDependency, &potentialDependencies]()
                 {
                     std::string scanned_FileContent;
                     {
@@ -178,26 +181,19 @@ std::unordered_map<std::string, std::vector<path>> DetectDependencies(const std:
                         std::regex pattern_toSearch(searched_FileName.filename().string());
                         if (std::regex_search(scanned_FileContent, pattern_toSearch))
                         {
-
                             std::lock_guard<std::mutex> lock(mut_writeDependency);
-                            potentialDependencies[searched_FileName.generic_string()].push_back(scanned_FileName);
+                            potentialDependencies[searched_FileName.generic_string()].insert(scanned_FileName);
                         }
                     }
-                }));
+                });
         }
-
-        std::cout << "[5%] searching...\r";
 
         // reporting percentage
-        for (size_t finished =0; finished < scanned_FileNames.size()*19/20;) {
-            finished = 0;
-            for (auto& f : todo) {
-                if (f.wait_for(std::chrono::nanoseconds(1)) == std::future_status::ready)
-                    ++finished;
-            }
-            std::cout << "[" << 5 + finished * 94 / scanned_FileNames.size() << "%] searching...      \r";
-            std::this_thread::sleep_for(std::chrono::seconds(2));
+        for (short percentage = 0; percentage < 90; percentage = todo.progress()) {
+            std::cout << "["<< 5 + percentage <<"%] searching...\r";
+            std::this_thread::sleep_for(std::chrono::seconds(4));
         }
+
         std::cout << "[98%] searching...        \r";
     }
     std::cout << "[100%] done.             \n";
